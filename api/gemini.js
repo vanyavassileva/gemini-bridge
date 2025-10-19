@@ -1,4 +1,4 @@
-// api/gemini.js — CommonJS serverless handler with image support
+// api/gemini.js — Image-only Gemini bridge
 
 async function readBody(req) {
   let body = "";
@@ -7,13 +7,13 @@ async function readBody(req) {
 }
 
 module.exports = async (req, res) => {
-  // CORS + preflight
+  // CORS
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
   res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
   if (req.method === "OPTIONS") { res.statusCode = 204; return res.end(); }
 
-  // Health
+  // Health check
   if (req.method === "GET") {
     res.statusCode = 200;
     return res.end("Gemini bridge running");
@@ -34,7 +34,7 @@ module.exports = async (req, res) => {
     const { prompt, temperature = 0.7, model = "gemini-2.0-flash" } = await readBody(req);
     if (!prompt) {
       res.statusCode = 400;
-      return res.end(JSON.stringify({ error: "Missing 'prompt' in body" }));
+      return res.end(JSON.stringify({ error: "Missing prompt" }));
     }
 
     const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${GEMINI_API_KEY}`;
@@ -49,25 +49,21 @@ module.exports = async (req, res) => {
 
     const data = await r.json();
 
-    // Try to extract an inline image if Gemini returned one
+    // Extract image only
     const parts = data?.candidates?.[0]?.content?.parts || [];
-    const imagePart = parts.find(p => p.inline_data && p.inline_data.data);
-    const textPart  = parts.find(p => typeof p.text === "string");
+    const imagePart = parts.find(p => p.inline_data?.data);
 
-    if (imagePart?.inline_data?.data) {
-      // Base64 data URL for easy rendering in chat
-      const dataUrl = `data:${imagePart.inline_data.mime_type || "image/png"};base64,${imagePart.inline_data.data}`;
-      res.setHeader("Content-Type", "application/json");
-      res.statusCode = 200;
-      return res.end(JSON.stringify({ type: "image", image: dataUrl, raw: data }));
+    if (!imagePart) {
+      res.statusCode = 500;
+      return res.end(JSON.stringify({ error: "No image generated" }));
     }
 
-    const text = parts.map(p => p.text || "").join("") || textPart?.text || "";
+    const dataUrl = `data:${imagePart.inline_data.mime_type || "image/png"};base64,${imagePart.inline_data.data}`;
     res.setHeader("Content-Type", "application/json");
     res.statusCode = 200;
-    return res.end(JSON.stringify({ type: "text", text, raw: data }));
+    res.end(JSON.stringify({ image: dataUrl }));
   } catch (e) {
     res.statusCode = 500;
-    return res.end(JSON.stringify({ error: e?.message || "server_error" }));
+    res.end(JSON.stringify({ error: e.message || "server_error" }));
   }
 };
