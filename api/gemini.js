@@ -1,6 +1,5 @@
-// api/gemini.js — CommonJS serverless handler for Vercel (no http.listen)
+// api/gemini.js — CommonJS serverless handler with image support
 
-// Read raw JSON body (Vercel doesn't auto-parse here)
 async function readBody(req) {
   let body = "";
   for await (const chunk of req) body += chunk;
@@ -14,19 +13,17 @@ module.exports = async (req, res) => {
   res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
   if (req.method === "OPTIONS") { res.statusCode = 204; return res.end(); }
 
-  // Simple health check
+  // Health
   if (req.method === "GET") {
     res.statusCode = 200;
     return res.end("Gemini bridge running");
   }
 
-  // Only POST handles prompts
   if (req.method !== "POST") {
     res.statusCode = 405;
     return res.end(JSON.stringify({ error: "Method not allowed" }));
   }
 
-  // Validate env
   const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
   if (!GEMINI_API_KEY) {
     res.statusCode = 500;
@@ -40,7 +37,6 @@ module.exports = async (req, res) => {
       return res.end(JSON.stringify({ error: "Missing 'prompt' in body" }));
     }
 
-    // Use global fetch on Vercel (no import needed)
     const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${GEMINI_API_KEY}`;
     const r = await fetch(url, {
       method: "POST",
@@ -52,9 +48,21 @@ module.exports = async (req, res) => {
     });
 
     const data = await r.json();
-    const parts = data?.candidates?.[0]?.content?.parts || [];
-    const text = parts.map(p => p.text || "").join("");
 
+    // Try to extract an inline image if Gemini returned one
+    const parts = data?.candidates?.[0]?.content?.parts || [];
+    const imagePart = parts.find(p => p.inline_data && p.inline_data.data);
+    const textPart  = parts.find(p => typeof p.text === "string");
+
+    if (imagePart?.inline_data?.data) {
+      // Base64 data URL for easy rendering in chat
+      const dataUrl = `data:${imagePart.inline_data.mime_type || "image/png"};base64,${imagePart.inline_data.data}`;
+      res.setHeader("Content-Type", "application/json");
+      res.statusCode = 200;
+      return res.end(JSON.stringify({ type: "image", image: dataUrl, raw: data }));
+    }
+
+    const text = parts.map(p => p.text || "").join("") || textPart?.text || "";
     res.setHeader("Content-Type", "application/json");
     res.statusCode = 200;
     return res.end(JSON.stringify({ type: "text", text, raw: data }));
