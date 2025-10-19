@@ -1,51 +1,43 @@
+import fetch from "node-fetch";
+
 export default async function handler(req, res) {
-  // Allow all origins for testing (you can restrict later)
-  res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
-  res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
   if (req.method === "OPTIONS") {
-    return res.status(204).end();
+    return res.status(200).end();
   }
 
-  const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
-  const MODEL = "gemini-2.0-flash";
-
-  if (!GEMINI_API_KEY) {
-    return res.status(500).json({ error: "Missing GEMINI_API_KEY" });
+  if (req.method !== "POST") {
+    return res.status(405).json({ error: "Method not allowed" });
   }
 
-  // GET = health check
-  if (req.method === "GET") {
-    return res.status(200).send("Gemini bridge running");
-  }
+  try {
+    const { prompt, model = "gemini-2.0-flash", type = "image" } = req.body;
 
-  // POST = send prompt to Gemini
-  if (req.method === "POST") {
-    try {
-      const { prompt, temperature = 0.7 } = req.body || {};
-      if (!prompt) {
-        return res.status(400).json({ error: "Missing 'prompt'" });
-      }
+    const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${process.env.GEMINI_API_KEY}`;
 
-      const url = `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent?key=${GEMINI_API_KEY}`;
-      const response = await fetch(url, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          contents: [{ role: "user", parts: [{ text: prompt }] }],
-          generationConfig: { temperature },
-        }),
-      });
+    const response = await fetch(apiUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        contents: [{ role: "user", parts: [{ text: prompt }] }],
+      }),
+    });
 
-      const data = await response.json();
-      const text =
-        data?.candidates?.[0]?.content?.parts?.[0]?.text || "No text response";
+    const data = await response.json();
 
-      return res.status(200).json({ text });
-    } catch (error) {
-      return res.status(500).json({ error: error.message });
+    // Extract base64 image data or fallback to text
+    const imageData =
+      data?.candidates?.[0]?.content?.parts?.find((p) => p.inline_data)?.inline_data?.data;
+
+    const textResponse =
+      data?.candidates?.[0]?.content?.parts?.find((p) => p.text)?.text;
+
+    if (imageData) {
+      res.status(200).json({ type: "image", image: `data:image/png;base64,${imageData}` });
+    } else {
+      res.status(200).json({ type: "text", text: textResponse });
     }
+  } catch (error) {
+    console.error("Error:", error);
+    res.status(500).json({ error: error.message });
   }
-
-  return res.status(405).json({ error: "Method not allowed" });
 }
